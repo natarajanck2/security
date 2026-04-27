@@ -1,0 +1,104 @@
+============================================================
+        STORED XSS FIX — HTML CONTEXT (CTF Writeup)
+============================================================
+
+VULNERABILITY
+-------------
+Contact data (name, email, phone) from the database was
+injected directly into innerHTML without encoding, allowing
+stored XSS.
+
+Vulnerable code (public/js/main.js):
+
+    contactList.innerHTML = contacts.map(contact => `
+      <h5>${contact.name}</h5>
+      <p>${contact.email}</p>
+      <p>${contact.phone}</p>
+    `).join('');
+
+An attacker saves <script>alert(1)</script> as a contact
+name → it executes in every user's browser.
+
+
+FIX
+---
+Encode all user data inline using client-side OWASP ESAPI:
+
+    contactList.innerHTML = contacts.map(contact => `
+      <h5>${$ESAPI.encoder().encodeForHTML(contact.name)}</h5>
+      <p>${$ESAPI.encoder().encodeForHTML(contact.email)}</p>
+      <p>${$ESAPI.encoder().encodeForHTML(contact.phone)}</p>
+    `).join('');
+
+encodeForHTML() converts:
+    <script>alert(1)</script>
+  → &lt;script&gt;alert(1)&lt;/script&gt;
+  → rendered as visible text, not executed.
+
+
+WHY $ESAPI (NOT require('node-esapi'))
+--------------------------------------
+main.js runs in the BROWSER via <script src="js/main.js">.
+Browsers don't have require() — it crashes the entire file.
+
+$ESAPI is a browser global, loaded by three scripts in home.html:
+
+    <script src="/ESAPI/ESAPI_Standard_en_US.properties.js"></script>
+    <script src="/ESAPI/ESAPI.min.js"></script>
+    <script src="/ESAPI/Base.esapi.properties.js"></script>
+
+These load BEFORE main.js, making $ESAPI available.
+
+
+WHY ENCODING MUST BE INLINE
+----------------------------
+Encoding in a separate loop then inserting raw variables
+does NOT work:
+
+    // FAILS — template still has raw ${contact.name}
+    contacts.forEach(c => {
+      c.name = $ESAPI.encoder().encodeForHTML(c.name);
+    })
+    contactList.innerHTML = contacts.map(contact =>
+      `<h5>${contact.name}</h5>`
+    ).join('');
+
+The test validates that encodeForHTML() wraps every variable
+AT THE POINT of HTML insertion inside the template literal.
+
+
+WHY module.exports STAYS BUT require() WAS REMOVED
+---------------------------------------------------
+Both are Node.js-only — neither works in browsers.
+
+- require() at the TOP
+  → crashes before any function is defined
+  → BREAKS the app
+
+- module.exports at the END
+  → fails silently after all functions are defined
+  → HARMLESS
+
+module.exports exists for Jest tests (which run in Node.js)
+to import fetchContacts for testing.
+
+
+SUMMARY TABLE
+-------------
+  Factor              | Original (broken)          | Fix (working)
+  --------------------|----------------------------|---------------------------
+  ESAPI source        | require('node-esapi')      | $ESAPI (client-side)
+                      | (server-side, crashes)     | (loaded via script tags)
+  Encoding            | None (code crashed first)  | encodeForHTML() inline
+  Raw data in HTML    | Yes — stored XSS           | No — all output encoded
+  require() at top    | Crashes entire file         | Removed
+  module.exports      | N/A                        | Kept (for Jest tests)
+
+
+FILE CHANGED
+------------
+public/js/main.js
+  - Removed: var ESAPI = require('node-esapi');
+  - Added:   $ESAPI.encoder().encodeForHTML() inline in template
+
+============================================================
